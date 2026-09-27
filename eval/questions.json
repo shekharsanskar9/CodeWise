@@ -1,0 +1,23 @@
+[
+  {"question": "How are uploaded files split into chunks?", "expected": ["codewise/chunking.py"]},
+  {"question": "Where are Python decorators attached to their function?", "expected": ["codewise/chunking.py"]},
+  {"question": "How are line numbers added to code shown to the model?", "expected": ["codewise/chunking.py"]},
+  {"question": "Which files and directories are ignored on upload?", "expected": ["codewise/files.py"]},
+  {"question": "How is a minified file detected?", "expected": ["codewise/files.py"]},
+  {"question": "Where is path traversal in filenames prevented?", "expected": ["codewise/files.py"]},
+  {"question": "How is the BM25 score computed?", "expected": ["codewise/retrieval.py"]},
+  {"question": "How are vector and keyword results combined?", "expected": ["codewise/retrieval.py"]},
+  {"question": "How are camelCase identifiers tokenized?", "expected": ["codewise/retrieval.py"]},
+  {"question": "Where are stale chunks deleted when a file is uploaded again?", "expected": ["codewise/index.py"]},
+  {"question": "What happens if a project was indexed with a different embedding model?", "expected": ["codewise/index.py"]},
+  {"question": "How is a file's full text rebuilt from its chunks?", "expected": ["codewise/index.py"]},
+  {"question": "Which embedding model is used and what is the fallback?", "expected": ["codewise/embeddings.py"]},
+  {"question": "Where is project metadata saved so it survives restarts?", "expected": ["codewise/store.py"]},
+  {"question": "How is conversation history protected against injected system messages?", "expected": ["codewise/llm.py"]},
+  {"question": "How is the prompt kept inside the model context window?", "expected": ["codewise/service.py", "codewise/llm.py"]},
+  {"question": "How are follow-up questions rewritten before search?", "expected": ["codewise/service.py"]},
+  {"question": "How does project analysis handle projects too large for one prompt?", "expected": ["codewise/service.py"]},
+  {"question": "What HTTP status does an upload return when only some files succeed?", "expected": ["codewise/app.py"]},
+  {"question": "How does the streaming answer endpoint send tokens?", "expected": ["codewise/app.py"]},
+  {"question": "Where is num_ctx configured?", "expected": ["codewise/config.py"]}
+]

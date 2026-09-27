@@ -1,26 +1,23 @@
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Environment
 .env
 
-# macOS
-.DS_Store
-
-# VS Code
-.vscode/
-
-# ChromaDB persistent storage (created by backend.py)
+# Local data (vector store, project metadata, uploads)
 chroma_data/
-
-# Uploaded files
+codewise.db
 uploaded_files/
 
-# React
+# Frontend
 frontend/node_modules/
 frontend/dist/
 
-# Logs
+# OS / editors
+.DS_Store
+.vscode/
 *.log
