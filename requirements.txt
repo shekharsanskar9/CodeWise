@@ -11,3 +11,4 @@ pydantic>=2.10.0
 ollama>=0.5.0
 
 sentence-transformers>=3.3.0
+pathspec>=0.12

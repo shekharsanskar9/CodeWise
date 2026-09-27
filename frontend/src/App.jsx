@@ -3,14 +3,19 @@ import axios from "axios";
 import { 
   FolderPlus, UploadCloud, Send, User, Bot, 
   Loader2, Code2, CheckCircle2, FileCode2, 
-  Copy, Check, FileText, Sparkles, RefreshCcw, ShieldAlert, BarChart3
+  Copy, Check, FileText, Sparkles, RefreshCcw, ShieldAlert, BarChart3,
+  FolderOpen, Files, Link2, Square, GitBranch
 } from "lucide-react";
+import {
+  fetchUploadRules, entriesFromDrop, entriesFromFileList, filterEntries, uploadEntries
+} from "./lib/uploads";
+import { streamSSE } from "./lib/stream";
 import toast, { Toaster } from "react-hot-toast";
 import Markdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-const API = "http://127.0.0.1:5000";
+const API = "http://127.0.0.1:8000";
 
 const CodeBlock = ({ node, inline, className, children, ...props }) => {
   const match = /language-(\w+)/.exec(className || "");
@@ -55,17 +60,33 @@ const CodeBlock = ({ node, inline, className, children, ...props }) => {
   );
 };
 
+let nextMessageId = 1;
+const newId = () => nextMessageId++;
+
+function summarize({ indexed, skipped, failed }) {
+  const parts = [`Indexed ${indexed} file${indexed === 1 ? "" : "s"}`];
+  if (skipped) parts.push(`skipped ${skipped}`);
+  if (failed) parts.push(`${failed} failed`);
+  return parts.join(" · ");
+}
+
 function App() {
   const [projectId, setProjectId] = useState("");
-  const [file, setFile] = useState(null);
+  const [pending, setPending] = useState([]); // [{ file, path }] waiting to be uploaded
+  const [pendingSkipped, setPendingSkipped] = useState(0);
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
-  
+  const [githubUrl, setGithubUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [rules, setRules] = useState(null);
+
   const chatEndRef = useRef(null);
+  const abortRef = useRef(null);
 
   const SUGGESTED_PROMPTS = [
     "Explain the overall architecture",
@@ -75,11 +96,15 @@ function App() {
   ];
 
   useEffect(() => {
+    fetchUploadRules(API).then(setRules);
+  }, []);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, analyzing]);
 
   const clearChat = () => {
-    setMessages([{ role: "ai", content: "Chat cleared. What else would you like to know about your code?" }]);
+    setMessages([{ id: newId(), role: "ai", content: "Chat cleared. What else would you like to know about your code?" }]);
   };
 
   const createProject = async () => {
@@ -88,42 +113,68 @@ function App() {
       setProjectId(res.data.project_id);
       setUploadedFiles([]);
       toast.success("Project Created Successfully!");
-      setMessages([{ role: "ai", content: "New project initialized. Upload some code and ask me anything!" }]);
+      setMessages([{ id: newId(), role: "ai", content: "New project initialized. Upload some code and ask me anything!" }]);
     } catch (err) {
       toast.error("Project creation failed");
     }
   };
 
+  const selectEntries = async (entries) => {
+    const activeRules = rules || (await fetchUploadRules(API));
+    const { kept, skipped } = filterEntries(entries, activeRules);
+    setPending(kept);
+    setPendingSkipped(skipped);
+    if (kept.length === 0 && skipped > 0) toast.error(`No supported files (${skipped} skipped)`);
+  };
+
   const handleDragOver = (e) => e.preventDefault();
-  const handleDrop = (e) => {
+  const handleDrop = async (e) => {
     e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setFile(e.dataTransfer.files[0]);
-    }
+    const activeRules = rules || (await fetchUploadRules(API));
+    selectEntries(await entriesFromDrop(e.dataTransfer, activeRules));
+  };
+
+  const applyUploadResult = (result) => {
+    const filesList = result.metadata?.files?.map(f => f.filename);
+    if (filesList) setUploadedFiles(filesList);
+    if (result.indexed > 0) toast.success(summarize(result));
+    else toast.error(summarize(result));
+    if (result.failed > 0) console.warn("Failed uploads:", result.failures);
   };
 
   const uploadFile = async () => {
-    if (!file) return toast.error("Please select a file first");
+    if (pending.length === 0) return toast.error("Please select files first");
     if (!projectId) return toast.error("Please create a project first");
 
     setUploading(true);
-    const formData = new FormData();
-    formData.append("files", file);
-
     try {
-      const res = await axios.post(`${API}/api/projects/${projectId}/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      toast.success("File uploaded successfully");
-      
-      // Update files list from backend metadata if available
-      const filesList = res.data.metadata?.files?.map(f => f.filename) || [...uploadedFiles, file.name];
-      setUploadedFiles(filesList);
-      setFile(null);
+      const activeRules = rules || (await fetchUploadRules(API));
+      const result = await uploadEntries(API, projectId, pending, activeRules, (done, total) =>
+        setUploadProgress(total > 1 ? `Uploading batch ${done}/${total}...` : "Ingesting chunks...")
+      );
+      applyUploadResult(result);
+      setPending([]);
+      setPendingSkipped(0);
     } catch (err) {
-      toast.error("Upload failed");
+      toast.error(err.response?.data?.error || "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress("");
+    }
+  };
+
+  const importGithub = async () => {
+    if (!projectId) return toast.error("Please create a project first");
+    if (!githubUrl.trim()) return;
+    setImporting(true);
+    try {
+      const res = await axios.post(`${API}/api/projects/${projectId}/import/github`, { url: githubUrl.trim() });
+      applyUploadResult({ ...res.data.summary, metadata: res.data.metadata, failures: [] });
+      setGithubUrl("");
+    } catch (err) {
+      toast.error(err.response?.data?.error || "GitHub import failed");
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -134,8 +185,8 @@ function App() {
       const res = await axios.get(`${API}/api/projects/${projectId}/analyze`);
       setMessages(prev => [
         ...prev,
-        { role: "user", content: "Run full project architectural and security analysis." },
-        { role: "ai", content: res.data.analysis }
+        { id: newId(), role: "user", content: "Run full project architectural and security analysis." },
+        { id: newId(), role: "ai", content: res.data.analysis }
       ]);
       toast.success("Project analysis complete!");
     } catch (err) {
@@ -145,35 +196,56 @@ function App() {
     }
   };
 
+  const updateMessage = (id, update) =>
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...update(m) } : m)));
+
   const askQuestion = async (textOverride = null) => {
     const currentQuestion = textOverride || question;
     if (!currentQuestion.trim()) return;
     if (!projectId) return toast.error("Please create a project or upload code first");
 
-    setMessages((prev) => [...prev, { role: "user", content: currentQuestion }]);
+    const history = messages
+      .filter(m => (m.role === "user" || m.role === "ai") && m.content && !m.error)
+      .map(m => ({ role: m.role === "ai" ? "assistant" : "user", content: m.content }));
+    const answerId = newId();
+    setMessages((prev) => [
+      ...prev,
+      { id: newId(), role: "user", content: currentQuestion },
+      { id: answerId, role: "ai", content: "", sources: [], streaming: true },
+    ]);
     setQuestion("");
     setLoading(true);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const res = await axios.post(`${API}/api/projects/${projectId}/ask`, {
-        question: currentQuestion,
-        history: messages.filter(m => m.role === "user" || m.role === "ai").map(m => ({
-          role: m.role === "ai" ? "assistant" : "user",
-          content: m.content
-        }))
+      await streamSSE(`${API}/api/projects/${projectId}/ask/stream`, { question: currentQuestion, history }, {
+        signal: controller.signal,
+        onEvent: (event, data) => {
+          if (event === "sources") updateMessage(answerId, () => ({ sources: data.sources }));
+          else if (event === "token") updateMessage(answerId, (m) => ({ content: m.content + data.content }));
+          else if (event === "error") throw new Error(data.error);
+        },
       });
-      
-      setMessages((prev) => [
-        ...prev, 
-        { role: "ai", content: res.data.answer, sources: res.data.sources }
-      ]);
+      updateMessage(answerId, () => ({ streaming: false }));
     } catch (err) {
-      setMessages((prev) => [...prev, { role: "ai", content: "⚠️ Error getting response from server." }]);
-      toast.error("Error getting response");
+      if (err.name === "AbortError") {
+        updateMessage(answerId, (m) => ({ streaming: false, content: (m.content || "") + "\n\n_(stopped)_" }));
+      } else {
+        updateMessage(answerId, (m) => ({
+          streaming: false,
+          error: !m.content,
+          content: (m.content ? m.content + "\n\n" : "") + `⚠️ ${err.message || "Error getting response from server."}`,
+        }));
+        toast.error("Error getting response");
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
+
+  const stopAnswer = () => abortRef.current?.abort();
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
@@ -227,35 +299,83 @@ function App() {
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               className={`border-2 border-dashed rounded-xl p-5 text-center transition-all ${
-                file ? "border-emerald-500 bg-emerald-500/10" : "border-slate-700 bg-slate-950/50 hover:border-slate-500"
+                pending.length ? "border-emerald-500 bg-emerald-500/10" : "border-slate-700 bg-slate-950/50 hover:border-slate-500"
               }`}
             >
               <input
                 type="file"
                 id="file-upload"
+                multiple
                 className="hidden"
-                onChange={(e) => setFile(e.target.files[0])}
+                onChange={(e) => { selectEntries(entriesFromFileList(e.target.files)); e.target.value = ""; }}
               />
-              <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center gap-2">
-                {file ? <FileCode2 className="w-8 h-8 text-emerald-400" /> : <UploadCloud className="w-8 h-8 text-slate-500" />}
+              <input
+                type="file"
+                id="folder-upload"
+                webkitdirectory=""
+                directory=""
+                className="hidden"
+                onChange={(e) => { selectEntries(entriesFromFileList(e.target.files)); e.target.value = ""; }}
+              />
+              <div className="flex flex-col items-center gap-2">
+                {pending.length ? <FileCode2 className="w-8 h-8 text-emerald-400" /> : <UploadCloud className="w-8 h-8 text-slate-500" />}
                 <div className="text-xs text-slate-400">
-                  {file ? <span className="text-slate-200 font-medium">{file.name}</span> : <span>Click or drag code file here</span>}
+                  {pending.length === 1 ? (
+                    <span className="text-slate-200 font-medium">{pending[0].path}</span>
+                  ) : pending.length > 1 ? (
+                    <span className="text-slate-200 font-medium">{pending.length} files ready</span>
+                  ) : (
+                    <span>Drag files, a folder or a .zip here</span>
+                  )}
+                  {pendingSkipped > 0 && (
+                    <span className="block text-slate-500 mt-0.5">{pendingSkipped} unsupported or ignored files left out</span>
+                  )}
                 </div>
-              </label>
+                <div className="flex gap-2 mt-1">
+                  <label htmlFor="file-upload" className="cursor-pointer flex items-center gap-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700">
+                    <Files size={12} /> Files / .zip
+                  </label>
+                  <label htmlFor="folder-upload" className="cursor-pointer flex items-center gap-1 text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700">
+                    <FolderOpen size={12} /> Folder
+                  </label>
+                </div>
+              </div>
             </div>
 
             <button
               onClick={uploadFile}
-              disabled={!file || uploading}
+              disabled={pending.length === 0 || uploading}
               className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 font-medium py-2 px-4 rounded-lg transition-colors border border-slate-700 text-sm"
             >
               {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-              {uploading ? "Ingesting Chunks..." : "Upload & Embed"}
+              {uploading ? (uploadProgress || "Ingesting Chunks...") : "Upload & Embed"}
             </button>
+
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Link2 className="w-4 h-4 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="github.com/owner/repo"
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") importGithub(); }}
+                  disabled={importing}
+                  className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 text-slate-200 text-xs rounded-lg pl-8 pr-2 py-2 disabled:opacity-50"
+                />
+              </div>
+              <button
+                onClick={importGithub}
+                disabled={importing || !githubUrl.trim()}
+                className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium px-3 rounded-lg border border-slate-700"
+              >
+                {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Import"}
+              </button>
+            </div>
 
             {uploadedFiles.length > 0 && (
               <div className="mt-4">
-                <h3 className="text-xs font-semibold text-slate-500 mb-2 uppercase">Indexed Files</h3>
+                <h3 className="text-xs font-semibold text-slate-500 mb-2 uppercase">Indexed Files ({uploadedFiles.length})</h3>
                 <ul className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                   {uploadedFiles.map((f, i) => (
                     <li key={i} className="flex items-center gap-2 text-xs text-slate-300 bg-slate-950 p-2 rounded border border-slate-800">
@@ -276,7 +396,7 @@ function App() {
         <header className="h-14 border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm flex items-center justify-between px-6 z-10">
           <div className="text-sm font-medium text-slate-300 flex items-center gap-2">
             <Sparkles size={16} className="text-emerald-400" />
-            CodeWise RAG Assistant ({API.includes('5000') ? 'Ollama Connected' : ''})
+            CodeWise RAG Assistant ({API.includes('8000') ? 'Ollama Connected' : ''})
           </div>
           {messages.length > 1 && (
             <button 
@@ -296,7 +416,7 @@ function App() {
             </div>
           ) : (
             messages.map((msg, idx) => (
-              <div key={idx} className={`flex gap-4 max-w-4xl mx-auto ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
+              <div key={msg.id ?? idx} className={`flex gap-4 max-w-4xl mx-auto ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
                 <div className={`w-8 h-8 shrink-0 rounded-md flex items-center justify-center mt-1 ${
                   msg.role === "user" ? "bg-emerald-600 text-white" : "bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
                 }`}>
@@ -311,6 +431,11 @@ function App() {
                   }`}>
                     {msg.role === "user" ? (
                       <p className="whitespace-pre-wrap">{msg.content}</p>
+                    ) : msg.streaming && !msg.content ? (
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
+                        <span className="text-slate-400 text-sm animate-pulse">Searching your code...</span>
+                      </div>
                     ) : (
                       <div className="prose prose-invert prose-emerald max-w-none">
                         <Markdown components={{ code: CodeBlock }}>{msg.content}</Markdown>
@@ -321,10 +446,17 @@ function App() {
                   {msg.sources && msg.sources.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-1">
                       {msg.sources.map((source, sIdx) => (
-                        <div key={sIdx} className="flex items-center gap-1.5 text-[11px] bg-slate-800/80 text-slate-400 px-2 py-1 rounded border border-slate-700/50">
-                          <FileText size={10} className="text-emerald-500" />
+                        <div
+                          key={sIdx}
+                          title={source.matched_by?.includes("graph") ? "Found via code relationships (calls/imports)" : undefined}
+                          className="flex items-center gap-1.5 text-[11px] bg-slate-800/80 text-slate-400 px-2 py-1 rounded border border-slate-700/50"
+                        >
+                          {source.matched_by?.includes("graph")
+                            ? <GitBranch size={10} className="text-indigo-400" />
+                            : <FileText size={10} className="text-emerald-500" />}
                           <span>{source.filename}</span>
                           <span className="text-slate-500">(Lines {source.lines})</span>
+                          {source.symbol && <span className="text-slate-500 font-mono truncate max-w-[12rem]">{source.symbol}</span>}
                         </div>
                       ))}
                     </div>
@@ -334,14 +466,14 @@ function App() {
             ))
           )}
 
-          {loading && (
+          {analyzing && (
             <div className="flex gap-4 max-w-4xl mx-auto">
               <div className="w-8 h-8 shrink-0 rounded-md bg-indigo-600 text-white flex items-center justify-center mt-1">
                 <Bot className="w-5 h-5" />
               </div>
               <div className="px-5 py-4 rounded-2xl rounded-tl-none bg-slate-900/80 border border-slate-800 flex items-center gap-2">
                 <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
-                <span className="text-slate-400 text-sm animate-pulse">Querying vector database & generating answer...</span>
+                <span className="text-slate-400 text-sm animate-pulse">Analyzing the whole project (this can take a few minutes)...</span>
               </div>
             </div>
           )}
@@ -375,13 +507,23 @@ function App() {
                 className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-slate-200 rounded-xl pl-4 pr-14 py-4 resize-none h-[56px] min-h-[56px] shadow-inner transition-all disabled:opacity-50"
                 rows={1}
               />
-              <button
-                onClick={() => askQuestion()}
-                disabled={loading || !question.trim() || !projectId}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-700 text-slate-950 disabled:text-slate-500 rounded-lg transition-colors"
-              >
-                <Send className="w-5 h-5" />
-              </button>
+              {loading ? (
+                <button
+                  onClick={stopAnswer}
+                  title="Stop generating"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors"
+                >
+                  <Square className="w-5 h-5" />
+                </button>
+              ) : (
+                <button
+                  onClick={() => askQuestion()}
+                  disabled={!question.trim() || !projectId}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-700 text-slate-950 disabled:text-slate-500 rounded-lg transition-colors"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              )}
             </div>
             <p className="text-center text-xs text-slate-500 font-medium">
               Shift + Enter for new line • Enter to send

@@ -231,7 +231,7 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ollama pull qwen2.5-coder:7b
 ollama pull nomic-embed-text      # code-aware embeddings (falls back to all-MiniLM-L6-v2 if missing)
-python backend.py                 # http://127.0.0.1:5000
+python backend.py                 # http://127.0.0.1:8000 (5000 is taken by macOS AirPlay Receiver)
 ```
 
 Projects indexed with one embedding model can't be queried with another. If you switch models, create a new project and re-upload.

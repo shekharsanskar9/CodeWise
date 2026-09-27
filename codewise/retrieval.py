@@ -92,7 +92,25 @@ def mentioned_files(query, paths):
     return found
 
 
-def hybrid_retrieve(index, project_id, query, top_k=5, candidate_k=20, max_distance=0.75):
+def chunks_at(chunks, locations):
+    """The chunk containing each (path, line), in order, without duplicates."""
+    by_path = {}
+    for chunk in chunks:
+        by_path.setdefault(chunk.path, []).append(chunk)
+    found = {}
+    for path, line in locations:
+        for chunk in by_path.get(path, []):
+            if chunk.start_line <= line <= chunk.end_line:
+                found.setdefault(chunk.chunk_id, chunk)
+                break
+    return list(found.values())
+
+
+def hybrid_retrieve(index, project_id, query, top_k=5, candidate_k=20, max_distance=0.75, locations=None):
+    """
+    ``locations`` are (path, line) pairs from the code graph (definitions and call sites
+    of symbols named in the question); their chunks join the fusion as a third signal.
+    """
     keyword_index = index.keyword_index(project_id)
     ranked_lists = {}
 
@@ -112,6 +130,9 @@ def hybrid_retrieve(index, project_id, query, top_k=5, candidate_k=20, max_dista
     named = mentioned_files(query, all_paths)
     if named:
         ranked_lists['filename'] = [c for c, _ in keyword_index.search(query, 3 * len(named), paths=named)]
+
+    if locations:
+        ranked_lists['graph'] = chunks_at(keyword_index.chunks, locations)[:candidate_k]
 
     fused = {}
     for source, chunks in ranked_lists.items():

@@ -28,7 +28,8 @@ _SYMBOL_PATTERNS = [
     re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)'),
     re.compile(r'^\s*(?:(?:public|private|protected|internal|override|open|suspend|inline)\s+)*fun\s+(?:<[^>]*>\s*)?([A-Za-z_]\w*)'),
     # Java / C# / C++ style method signatures: "<modifiers/type> name(...)" not ending in ';'
-    re.compile(r'^\s*(?:(?:public|private|protected|internal|static|final|virtual|override|async|const|inline|unsigned)\s+)*'
+    re.compile(r'^\s*(?!(?:return|await|new|throw|else|case|yield|typeof|delete|void|goto)\b)'
+               r'(?:(?:public|private|protected|internal|static|final|virtual|override|async|const|inline|unsigned)\s+)*'
                r'[A-Za-z_][\w<>\[\],:*&\s]*?\s+\**([A-Za-z_]\w*)\s*\([^;]*$'),
 ]
 _NOT_SYMBOLS = {'if', 'for', 'while', 'switch', 'return', 'else', 'catch', 'do', 'new', 'sizeof', 'elif'}

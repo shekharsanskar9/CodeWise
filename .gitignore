@@ -21,3 +21,6 @@ frontend/dist/
 .DS_Store
 .vscode/
 *.log
+logs/
+eval/results/
+eval/answer_questions.draft.json
