@@ -55,12 +55,20 @@ class Config:
 
     # Uploads
     max_file_bytes: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_FILE_BYTES", 1_000_000))
-    max_request_bytes: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_REQUEST_BYTES", 50_000_000))
+    max_request_bytes: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_REQUEST_BYTES", 100_000_000))
+    # Zip uploads and GitHub imports
+    max_archive_bytes: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_ARCHIVE_BYTES", 100_000_000))
+    max_archive_files: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_ARCHIVE_FILES", 20_000))
+    max_archive_source_bytes: int = field(default_factory=lambda: _env_int("CODEWISE_MAX_ARCHIVE_SOURCE_BYTES", 200_000_000))
+    github_token: str = field(default_factory=lambda: os.environ.get("CODEWISE_GITHUB_TOKEN", ""))
+
+    # Opt-in log of real questions/answers, used to build answer-quality test sets.
+    question_log_path: str = field(default_factory=lambda: os.environ.get("CODEWISE_QUESTION_LOG", ""))
 
     # Server
     debug: bool = field(default_factory=lambda: _env_bool("CODEWISE_DEBUG", False))
     host: str = field(default_factory=lambda: os.environ.get("CODEWISE_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: _env_int("CODEWISE_PORT", 5000))
+    port: int = field(default_factory=lambda: _env_int("CODEWISE_PORT", 8000))
     cors_origins: list = field(default_factory=lambda: [
         o.strip() for o in os.environ.get(
             "CODEWISE_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"

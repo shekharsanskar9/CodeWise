@@ -2,18 +2,27 @@
 Application logic: ingestion, question answering and project analysis.
 """
 
+import json
 import logging
+import os
+import threading
+import time
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import PurePosixPath
 
 from . import llm as prompts
 from .chunking import chunk_code, split_lines
 from .files import FileRejected, check_path, decode_content, normalize_path
+from .graph import extract_graph
 from .index import LEGACY_EMBED_MODEL
 from .llm import (build_context, estimate_tokens, fence_for, fit_history, sanitize_history,
                   truncate_to_tokens)
+from .relations import CodeRelations, render_relations
 from .retrieval import hybrid_retrieve
+from .sources import (SourceError, download_github_zip, filter_uploads, parse_github_url,
+                      read_zip)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +56,8 @@ class CodeWise:
         self.store = store
         self.index = index
         self.llm = llm
+        self.relations = CodeRelations(store)
+        self._log_lock = threading.Lock()
 
     # --- projects -----------------------------------------------------------------------
 
@@ -87,32 +98,72 @@ class CodeWise:
     # --- ingestion ----------------------------------------------------------------------
 
     def upload_files(self, project_id, files):
+        """
+        Ingest uploaded files. Zip archives are expanded; folder uploads send relative paths
+        plus their .gitignore files, which are applied to the rest of the batch.
+        """
         self.require_project(project_id)
-        results = []
+        entries, results = [], []
         for file in files:
-            results.append(self._ingest(project_id, file))
-        return results
+            raw_name = file.filename or ''
+            if raw_name.lower().endswith('.zip'):
+                try:
+                    extracted, skipped = self._read_zip(file.read())
+                except SourceError as e:
+                    results.append({'filename': raw_name, 'success': False, 'message': str(e)})
+                    continue
+                entries.extend(extracted)
+                results.extend(skipped)
+                continue
+            try:
+                entries.append((normalize_path(raw_name), file.read()))
+            except FileRejected as e:
+                results.append({'filename': raw_name, 'success': False, 'message': str(e)})
+        return results + self._ingest_entries(project_id, entries)
 
-    def _ingest(self, project_id, file):
-        raw_name = file.filename or ''
+    def import_github(self, project_id, data):
+        self.require_project(project_id)
+        if not isinstance(data, dict):
+            raise BadRequest("Request body must be a JSON object")
         try:
-            path = normalize_path(raw_name)
+            owner, repo, ref = parse_github_url(data.get('url'), data.get('ref') or None)
+            archive = download_github_zip(owner, repo, ref, self.config.max_archive_bytes,
+                                          token=self.config.github_token or None)
+            extracted, skipped = self._read_zip(archive)
+        except SourceError as e:
+            raise BadRequest(str(e))
+        results = skipped + self._ingest_entries(project_id, extracted)
+        return {'owner': owner, 'repo': repo, 'ref': ref}, results
+
+    def _read_zip(self, data):
+        if len(data) > self.config.max_archive_bytes:
+            raise SourceError(f"Archive too large (limit {self.config.max_archive_bytes:,} bytes)")
+        return read_zip(data, self.config.max_archive_files,
+                        self.config.max_archive_source_bytes, self.config.max_file_bytes)
+
+    def _ingest_entries(self, project_id, entries):
+        files, skipped, _ = filter_uploads(entries)
+        return skipped + [self._ingest(project_id, path, raw) for path, raw in files]
+
+    def _ingest(self, project_id, path, raw):
+        try:
             check_path(path)
-            content = decode_content(file.read(), self.config.max_file_bytes)
+            content = decode_content(raw, self.config.max_file_bytes)
             chunks = chunk_code(content, path, max_chars=self.config.chunk_max_chars,
                                 overlap_lines=self.config.chunk_overlap_lines)
             if not chunks:
                 raise FileRejected("File is empty")
             self.index.replace_file(project_id, path, chunks)
+            self.store.replace_file_graph(project_id, path, extract_graph(content, path))
             self.store.upsert_file(project_id, path, chunks=len(chunks), size=len(content),
                                    lines=len(split_lines(content)))
             return {'filename': path, 'success': True,
                     'message': f"Successfully processed {path} with {len(chunks)} chunks"}
         except FileRejected as e:
-            return {'filename': raw_name, 'success': False, 'message': str(e)}
+            return {'filename': path, 'success': False, 'skipped': True, 'message': str(e)}
         except Exception as e:
-            log.exception("Failed to ingest %s", raw_name)
-            return {'filename': raw_name, 'success': False, 'message': f"Error processing file: {e}"}
+            log.exception("Failed to ingest %s", path)
+            return {'filename': path, 'success': False, 'message': f"Error processing file: {e}"}
 
     # --- question answering -------------------------------------------------------------
 
@@ -130,17 +181,22 @@ class CodeWise:
         history = sanitize_history(data.get('history', []))
 
         search_query = self._standalone_query(question, history)
+        files = [f['filename'] for f in self.store.list_files(project_id)]
+        # The rewritten query may name the symbol a follow-up refers to ("it").
+        relations = self.relations.for_question(project_id, f"{question}\n{search_query}", files)
         retrieved = hybrid_retrieve(
             self.index, project_id, search_query,
             top_k=self.config.top_k, candidate_k=self.config.candidate_k,
-            max_distance=self.config.max_distance,
+            max_distance=self.config.max_distance, locations=relations.locations(),
         )
 
         # Token budget: the prompt must fit in num_ctx with room left for the answer,
         # otherwise Ollama silently drops the start of the prompt (system prompt first).
         available = (self.config.num_ctx - self.config.answer_reserve_tokens
                      - estimate_tokens(prompts.QA_SYSTEM_PROMPT) - estimate_tokens(question) - 64)
-        context_str, used = build_context(retrieved, int(available * 0.7))
+        relations_str = render_relations(relations, int(available * 0.15))
+        context_str, used = build_context(retrieved, int(available * 0.7) - estimate_tokens(relations_str))
+        context_str = relations_str + context_str
         history_budget = available - estimate_tokens(context_str)
         history = fit_history(history, max(history_budget, 0))
 
@@ -162,20 +218,49 @@ class CodeWise:
             'messages': messages,
             'sources': sources,
             'context_found': bool(used),
+            'relations': [s.name for s in relations.symbols] + [f.path for f in relations.files],
+            'started': time.monotonic(),
         }
 
     def ask(self, project_id, data):
         prepared = self.prepare_question(project_id, data)
         answer, usage = self.llm.chat(prepared['messages'])
+        self.log_interaction(project_id, prepared, answer, usage)
         return {
             'question': prepared['question'],
             'answer': answer,
             'sources': prepared['sources'],
             'search_query': prepared['search_query'],
             'context_found': prepared['context_found'],
+            'relations': prepared['relations'],
             'model': self.llm.model,
             'usage': usage,
         }
+
+    def log_interaction(self, project_id, prepared, answer, usage=None, complete=True):
+        """Append a real question/answer to the opt-in JSONL log (CODEWISE_QUESTION_LOG)."""
+        path = self.config.question_log_path
+        if not path:
+            return
+        record = {
+            'timestamp': datetime.now().isoformat(),
+            'project_id': project_id,
+            'question': prepared['question'],
+            'search_query': prepared['search_query'],
+            'sources': prepared['sources'],
+            'relations': prepared['relations'],
+            'answer': answer,
+            'complete': complete,
+            'usage': usage,
+            'seconds': round(time.monotonic() - prepared['started'], 2),
+            'model': self.llm.model,
+        }
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with self._log_lock, open(path, 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(record) + '\n')
+        except OSError as e:
+            log.warning("Could not write question log: %s", e)
 
     def _standalone_query(self, question, history):
         """Rewrite a follow-up ("how does it handle errors?") into a self-contained search query."""
@@ -196,6 +281,20 @@ class CodeWise:
         if not rewritten or len(rewritten) > 500:
             return question
         return rewritten
+
+    # --- code graph ---------------------------------------------------------------------
+
+    def graph(self, project_id, symbol=None, path=None):
+        self.require_project(project_id)
+        if symbol:
+            return {'symbol': asdict(self.relations.symbol(project_id, symbol))}
+        if path:
+            files = [f['filename'] for f in self.store.list_files(project_id)]
+            if path not in files:
+                raise NotFound(f"File not found: {path}")
+            return {'file': asdict(self.relations.file(project_id, path, files)),
+                    'symbols': self.store.file_symbols(project_id, path)}
+        raise BadRequest("Pass ?symbol=<name> or ?file=<path>")
 
     # --- project analysis ---------------------------------------------------------------
 

@@ -21,7 +21,40 @@ CREATE TABLE IF NOT EXISTS files (
     uploaded_at TEXT NOT NULL,
     PRIMARY KEY (project_id, filename)
 );
+CREATE TABLE IF NOT EXISTS symbols (
+    project_id  TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    qualname    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    start_line  INTEGER NOT NULL,
+    end_line    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS symbols_name ON symbols (project_id, name);
+CREATE INDEX IF NOT EXISTS symbols_path ON symbols (project_id, path);
+CREATE TABLE IF NOT EXISTS calls (
+    project_id  TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    line        INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    caller      TEXT NOT NULL,
+    expr        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS calls_name ON calls (project_id, name);
+CREATE INDEX IF NOT EXISTS calls_caller ON calls (project_id, caller);
+CREATE INDEX IF NOT EXISTS calls_path ON calls (project_id, path);
+CREATE TABLE IF NOT EXISTS imports (
+    project_id  TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    line        INTEGER NOT NULL,
+    module      TEXT NOT NULL,
+    name        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS imports_path ON imports (project_id, path);
 """
+
+# Stop answers from being flooded by very common names.
+GRAPH_ROW_LIMIT = 200
 
 
 class ProjectStore:
@@ -81,3 +114,71 @@ class ProjectStore:
             'embed_model': project['embed_model'],
             'total_lines': sum(f['lines'] for f in files),
         }
+
+    # --- code graph -------------------------------------------------------------------
+
+    def replace_file_graph(self, project_id, path, graph):
+        with closing(self._connect()) as conn, conn:
+            for table in ('symbols', 'calls', 'imports'):
+                conn.execute(f"DELETE FROM {table} WHERE project_id = ? AND path = ?", (project_id, path))
+            conn.executemany(
+                "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(project_id, path, d.name, d.qualname, d.kind, d.start_line, d.end_line)
+                 for d in graph.definitions])
+            conn.executemany(
+                "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?)",
+                [(project_id, path, c.line, c.name, c.caller, c.expr) for c in graph.calls])
+            conn.executemany(
+                "INSERT INTO imports VALUES (?, ?, ?, ?, ?)",
+                [(project_id, path, i.line, i.module, i.name) for i in graph.imports])
+
+    def _rows(self, sql, params):
+        with closing(self._connect()) as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def find_definitions(self, project_id, name):
+        """Definitions whose simple name or qualified name matches (``save`` or ``Store.save``)."""
+        return self._rows(
+            "SELECT path, name, qualname, kind, start_line, end_line FROM symbols "
+            "WHERE project_id = ? AND (name = ? OR qualname = ?) ORDER BY path, start_line LIMIT ?",
+            (project_id, name, name, GRAPH_ROW_LIMIT))
+
+    def known_symbol_names(self, project_id, candidates):
+        candidates = list(dict.fromkeys(candidates))[:200]
+        if not candidates:
+            return set()
+        marks = ','.join('?' * len(candidates))
+        rows = self._rows(
+            f"SELECT DISTINCT name FROM symbols WHERE project_id = ? AND name IN ({marks}) "
+            f"UNION SELECT DISTINCT qualname FROM symbols WHERE project_id = ? AND qualname IN ({marks})",
+            (project_id, *candidates, project_id, *candidates))
+        return {r['name'] for r in rows}
+
+    def find_callers(self, project_id, name):
+        return self._rows(
+            "SELECT path, line, caller, expr FROM calls WHERE project_id = ? AND name = ? "
+            "ORDER BY path, line LIMIT ?",
+            (project_id, name, GRAPH_ROW_LIMIT))
+
+    def find_callees(self, project_id, qualname):
+        return self._rows(
+            "SELECT path, line, name, expr FROM calls WHERE project_id = ? AND caller = ? "
+            "ORDER BY line LIMIT ?",
+            (project_id, qualname, GRAPH_ROW_LIMIT))
+
+    def find_name_importers(self, project_id, name):
+        return self._rows(
+            "SELECT path, line, module, name FROM imports WHERE project_id = ? AND name = ? "
+            "ORDER BY path, line LIMIT ?",
+            (project_id, name, GRAPH_ROW_LIMIT))
+
+    def all_imports(self, project_id):
+        return self._rows(
+            "SELECT path, line, module, name FROM imports WHERE project_id = ? ORDER BY path, line",
+            (project_id,))
+
+    def file_symbols(self, project_id, path):
+        return self._rows(
+            "SELECT name, qualname, kind, start_line, end_line FROM symbols "
+            "WHERE project_id = ? AND path = ? ORDER BY start_line",
+            (project_id, path))
