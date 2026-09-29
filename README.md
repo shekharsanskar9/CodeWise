@@ -1,333 +1,160 @@
 # 🚀 CodeWise – Intelligent Code Mentor AI
 
-CodeWise is a Retrieval-Augmented Generation (RAG) powered AI assistant that understands an entire codebase instead of answering questions from a single file.
+CodeWise is a private, local AI assistant that helps you **understand a codebase by asking it questions**. Load a project (files, a folder, a zip, or a GitHub repository), ask questions in plain English, and get answers grounded in your actual code, with the file names and line numbers they came from.
 
-Developers can upload source code, ask questions in natural language, and receive context-aware explanations generated using **Qwen2.5-Coder** running locally through **Ollama**. Relevant code snippets are retrieved from **ChromaDB**, allowing the model to answer based on the uploaded project rather than relying only on its pre-trained knowledge.
+Everything runs on your own machine. **Qwen2.5-Coder** runs locally through **Ollama**, your code is indexed in a local **ChromaDB**, and nothing is sent to a cloud service.
+
+> *"Who calls `process_pdf_pipeline`?"* · *"How does the upload flow work?"* · *"What depends on `store.py`?"*
 
 ---
 
 # ✨ Features
 
-- 📂 Upload complete software projects
-- 🔍 Semantic code search using ChromaDB
-- 🤖 Local LLM inference using Ollama
-- 💬 Natural language Q&A over code
-- 📄 Source file and line references
-- 📊 AI-powered project analysis
-- ⚡ Fast Flask REST API
-- 🎨 Modern React interface
+**Bring in a whole project**
+- 📂 Upload files, whole folders (drag and drop), or `.zip` archives
+- 🐙 Import a GitHub repository by pasting its URL
+- 🧹 Skips noise automatically: `node_modules`, `venv`, `.git`, lockfiles, minified bundles, and anything in your `.gitignore`
+
+**Ask and get grounded answers**
+- 💬 Plain-English questions, with follow-ups that understand "it" and "that"
+- ⚡ Answers stream in word by word, with a **Stop** button
+- 📄 Every answer lists its sources: file, line range, and function or class
+- 🙅 Says so when the answer isn't in your code, instead of guessing
+
+**Understand how code connects**
+- 🔗 Maps which functions call which, and which files import which
+- 🎯 Answers *"who calls X?"* and *"what depends on this file?"* from the real structure of the code
+
+**Review the whole project**
+- 📊 **AI Code Audit**: architecture, patterns, code quality and security concerns across the project
 
 ---
 
-# 🏗 System Architecture
+# 🧠 How it works
 
+```mermaid
+flowchart LR
+    Q["Your question"] --> R["Rewrite follow-ups"]
+    R --> S1["Search by meaning<br/>(vectors)"]
+    R --> S2["Search by name<br/>(BM25 keywords)"]
+    R --> S3["Call / import graph"]
+    S1 & S2 & S3 --> F["Fuse rankings"]
+    F --> P["Prompt with numbered<br/>code lines"]
+    P --> M["Qwen2.5-Coder<br/>(Ollama)"]
+    M --> A["Streamed answer<br/>+ sources"]
 ```
-                User Question
-                      │
-                      ▼
-              React Frontend
-                      │
-               HTTP REST API
-                      │
-                      ▼
-                Flask Backend
-                      │
-                      ▼
-                 ChromaDB
-          (Semantic Retrieval)
-                      │
-                      ▼
-          Retrieve Relevant Chunks
-                      │
-                      ▼
-               Ollama Server
-                      │
-                      ▼
-          Qwen2.5-Coder 7B Model
-                      │
-                      ▼
-               AI Generated Answer
-```
+
+1. **Structure-aware chunking.** Code is split into whole functions and classes (Python by syntax tree; JS/TS, Java, Go, Rust, C/C++ by code blocks), not arbitrary slices.
+2. **Code-aware embeddings.** `nomic-embed-text` turns each chunk, labelled with its file, function and lines, into a vector stored in ChromaDB.
+3. **Hybrid search.** Meaning-based search, keyword search that understands `snake_case` and `camelCase`, and the call/import graph are combined with Reciprocal Rank Fusion.
+4. **Grounded prompts.** The best chunks are sent with real line numbers, fitted to the model's context window.
+5. **Local generation.** Qwen2.5-Coder writes the answer, which streams back to the browser.
+
+Details: [Architecture guide](docs/architecture.md).
 
 ---
 
-# 🧠 RAG Pipeline
+# ⚙️ Quick start
 
+You'll need **Python 3.10+**, **Node.js 20.19+**, and **[Ollama](https://ollama.com)**.
+
+```bash
+# 1. Models (one time)
+ollama pull qwen2.5-coder:7b
+ollama pull nomic-embed-text
+
+# 2. Backend
+git clone https://github.com/shekharsanskar9/CodeWise.git
+cd CodeWise
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+python backend.py                 # http://127.0.0.1:8000
+
+# 3. Frontend (second terminal)
+cd frontend
+npm install
+npm run dev                       # open http://localhost:5173
 ```
-User uploads code
-        │
-        ▼
-File Processing
-        │
-        ▼
-Code Chunking
-        │
-        ▼
-Store Chunks in ChromaDB
-        │
-        ▼
-─────────────────────────────────
-        │
-User asks a question
-        │
-        ▼
-Semantic Search
-        │
-        ▼
-Retrieve Top Code Chunks
-        │
-        ▼
-Prompt Construction
-        │
-        ▼
-Qwen2.5-Coder (Ollama)
-        │
-        ▼
-AI Response + Sources
-```
+
+Then click **Create Project**, upload some code, and start asking.
+
+> 💡 On a Mac, the backend uses port **8000** because macOS reserves 5000 for AirPlay Receiver.
+
+To change models, limits or ports, copy `.env.example` to `.env` and edit it. See [Configuration](docs/configuration.md).
 
 ---
 
-# ⚙ Technology Stack
+# 📚 Documentation
 
-## Backend
+| Guide | What's inside |
+|---|---|
+| [Architecture](docs/architecture.md) | Components, upload and question flows, code graph, data storage, design decisions |
+| [API reference](docs/api.md) | Every endpoint with request/response examples |
+| [Configuration](docs/configuration.md) | All settings and when to change them |
+| [Development](docs/development.md) | Dev setup, tests, where to make common changes |
+| [Evaluation](docs/evaluation.md) | Measuring search and answer quality |
+| [Troubleshooting](docs/troubleshooting.md) | Fixes for common problems |
 
-- Python
-- Flask
-- ChromaDB
-- Ollama
-- Qwen2.5-Coder
-- REST APIs
-
-## Frontend
-
-- React
-- JavaScript
-- Tailwind CSS
-- Lucide React
+There's also a friendlier overview in the [project wiki](https://github.com/shekharsanskar9/CodeWise/wiki).
 
 ---
 
-# 📂 Project Workflow
+# 🛠 Technology Stack
 
-### 1. Upload Code
+| Layer | Tools |
+|---|---|
+| **Backend** | Python, Flask, ChromaDB, SQLite |
+| **Models** | Ollama · Qwen2.5-Coder 7B (answers) · nomic-embed-text (search) |
+| **Frontend** | React, Vite, Tailwind CSS, Lucide icons |
+| **Quality** | pytest (~90 tests), retrieval and answer-quality evaluation |
 
-The user uploads one or multiple source files.
-
-↓
-
-### 2. Intelligent Chunking
-
-Files are split along the code's structure: Python by AST (functions, classes, and methods of large classes), C-like languages by top-level brace blocks, Markdown by headings. Small neighbours are packed together, and oversized blocks fall back to overlapping line windows. Each chunk records its 1-based line range and symbol name.
-
-Lockfiles, minified bundles, binaries and directories such as `node_modules/`, `dist/` and `venv/` are rejected at upload.
-
-↓
-
-### 3. Vector Storage
-
-Each chunk is embedded with a code-aware model (`nomic-embed-text` via Ollama) together with a `File / Symbol / Lines` header, and stored in ChromaDB. Re-uploading a file replaces its old chunks. Project metadata is persisted in SQLite (`codewise.db`).
-
-↓
-
-### 4. Ask Questions
-
-The user asks questions about the uploaded project.
-
-↓
-
-### 5. Semantic Retrieval
-
-Follow-up questions are first rewritten into standalone queries using the chat history. Retrieval is hybrid: vector search plus BM25 keyword search (identifier-aware, splits `snake_case`/`camelCase`), fused with Reciprocal Rank Fusion. Files named in the question are boosted, and low-relevance hits are dropped.
-
-↓
-
-### 6. AI Reasoning
-
-Retrieved chunks, with real line numbers on every line, are sent with the question and trimmed history to Qwen2.5-Coder through Ollama. The prompt is token-budgeted to fit `num_ctx`, so nothing is silently truncated.
-
-↓
-
-### 7. Response Generation
-
-The model generates an answer grounded in the retrieved code and returns the corresponding source files.
+```
+backend.py         Entry point
+codewise/          Backend package: ingestion, search, prompts, code graph, API
+frontend/          React app
+tests/             pytest suite (runs without Ollama)
+eval/              Retrieval and answer-quality evaluation
+docs/              Documentation
+```
 
 ---
 
 # 📌 Supported Languages
 
-- Python
-- Java
-- JavaScript
-- TypeScript
-- C
-- C++
-- C#
-- Go
-- PHP
-- Kotlin
-- Swift
-- Rust
-- HTML
-- CSS
-- SQL
-- JSON
-- Markdown
-- YAML
-- XML
+Python, JavaScript, TypeScript, Java, Kotlin, C, C++, C#, Go, Rust, PHP, Ruby, Swift, SQL, plus HTML, CSS, JSON, YAML, TOML, XML and Markdown.
+
+Structure-aware chunking and the call/import graph are most accurate for **Python**, then **JavaScript/TypeScript**.
 
 ---
 
-# 🎯 Example
+# ⚠️ Limitations
 
-### User
-
-> Explain the authentication flow.
-
-↓
-
-### ChromaDB retrieves
-
-```
-auth.py
-login.py
-jwt.py
-middleware.py
-```
-
-↓
-
-### Qwen2.5-Coder answers
-
-```
-Authentication starts inside login.py where the user
-credentials are verified.
-
-After validation,
-a JWT token is generated in jwt.py.
-
-The middleware checks the token
-before protected routes are executed.
-```
-
-↓
-
-### Sources
-
-```
-login.py (Lines 45-80)
-
-jwt.py (Lines 12-38)
-
-middleware.py (Lines 20-60)
-```
+- **Slower than cloud tools.** About 20–40 seconds per answer on an M4 MacBook with 16 GB. That's the cost of running a 7B model locally.
+- **A small model is still a small model.** Great at explaining and finding code, weaker at deep reasoning across many files, and it occasionally gets a path slightly wrong. Always check the sources.
+- **Calls are matched by name.** Two functions both called `save` are treated as one, and dynamic calls aren't detected.
+- **A snapshot of your code.** After editing, upload the changed files again.
+- **No user accounts.** It's built to run on your own machine, not on the public internet.
 
 ---
 
-# 🛠 Running the Backend
+# 🗂 Version History
 
-```bash
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-ollama pull qwen2.5-coder:7b
-ollama pull nomic-embed-text      # code-aware embeddings (falls back to all-MiniLM-L6-v2 if missing)
-python backend.py                 # http://127.0.0.1:8000 (5000 is taken by macOS AirPlay Receiver)
-```
-
-Projects indexed with one embedding model can't be queried with another. If you switch models, create a new project and re-upload.
-
-## Configuration
-
-Set via environment variables or a `.env` file:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CODEWISE_CHAT_MODEL` | `qwen2.5-coder:7b` | Ollama chat model |
-| `CODEWISE_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
-| `CODEWISE_NUM_CTX` | `8192` | Context window passed to Ollama |
-| `CODEWISE_ANSWER_RESERVE` | `1536` | Tokens kept free for the answer |
-| `CODEWISE_TOP_K` | `5` | Chunks sent to the model |
-| `CODEWISE_MAX_DISTANCE` | `0.75` | Cosine distance cutoff for vector hits |
-| `CODEWISE_CHUNK_MAX_CHARS` | `1500` | Max chunk size |
-| `CODEWISE_REWRITE_QUERIES` | `true` | Rewrite follow-up questions before search |
-| `CODEWISE_MAX_FILE_BYTES` | `1000000` | Per-file upload limit |
-| `CODEWISE_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Allowed frontend origins |
-| `CODEWISE_DEBUG` | `false` | Flask debug mode. Never enable on a reachable host |
-
-## API
-
-| Method | Endpoint | Notes |
-|--------|----------|-------|
-| POST | `/api/projects/create` | Returns `project_id` |
-| POST | `/api/projects/<id>/upload` | Multipart `files`. Returns 200 if all files were indexed, 207 if some were, 400 if none |
-| POST | `/api/projects/<id>/ask` | `{question, history}`. Sources include line range, symbol and scores |
-| POST | `/api/projects/<id>/ask/stream` | Same as `/ask`, as Server-Sent Events (`sources`, `token`, `done`) |
-| GET | `/api/projects/<id>/analyze` | Analyzes the whole project, or map-reduces per-file summaries if it's too large |
-| GET | `/api/projects/<id>/info` | Project metadata |
-
-## Tests and Retrieval Evaluation
-
-```bash
-pip install -r requirements-dev.txt
-pytest                              # unit + API tests (no Ollama needed)
-python eval/retrieval_eval.py -v    # hit@k / MRR for vector vs keyword vs hybrid retrieval
-```
-
-`eval/questions.json` holds question → expected-file pairs. Extend it or point `--root` and `--questions` at another project to measure whether a retrieval change helps.
-
----
-
-# 💡 Applications
-
-- Understanding unfamiliar codebases
-- Project documentation
-- AI-assisted code review
-- Debugging support
-- Architecture explanation
-- Learning open-source projects
-- Developer onboarding
-
----
-
-# 🚀 Highlights
-
-- Retrieval-Augmented Generation (RAG)
-- Local AI execution (No paid APIs)
-- Semantic vector search
-- Context-aware code understanding
-- Multi-file reasoning
-- Source attribution
-- Modern React UI
-- RESTful backend
-
----
-
-# 📊 Architecture Components
-
-| Component | Purpose |
-|-----------|----------|
-| React | User Interface |
-| Flask | Backend API |
-| ChromaDB | Vector Database |
-| Ollama | Local Model Runtime |
-| Qwen2.5-Coder | Code LLM |
-| File Chunker | Splits source code |
-| Semantic Search | Retrieves relevant code |
-| RAG Pipeline | Generates contextual answers |
+| Version | Highlights |
+|---|---|
+| **1.0** | First working version: upload files, ask questions, answers with sources |
+| **[2.0](https://github.com/shekharsanskar9/CodeWise/releases/tag/v2.0)** | Rebuilt search: structure-aware chunking, code-aware embeddings, hybrid search, follow-up rewriting, correct line numbers, saved project data, tests |
+| **[3.0](https://github.com/shekharsanskar9/CodeWise/releases/tag/v3.0)** | Folder, zip and GitHub import; streaming answers; call/import graph; answer-quality evaluation |
 
 ---
 
 # 🎯 Future Improvements
 
-- GitHub repository integration
-- Drag-and-drop project upload
-- VS Code Extension
-- Repository summarization
-- Code visualization
-- Streaming responses in the UI (backend already exposes `/ask/stream`)
-- Multi-user support
+- Remember the open project across page reloads, and list or delete projects
+- Background imports with progress for very large repositories
+- Optional hosted model for users who prefer speed over privacy
+- Re-index only the files that changed
+- VS Code extension
 - Docker deployment
-- Authentication system
 
 ---
 
@@ -343,4 +170,4 @@ AI • Machine Learning • Full Stack Development
 
 # ⭐ Project Goal
 
-The objective of CodeWise is to enable developers to interact with their codebase using natural language. By combining Retrieval-Augmented Generation with semantic search and a locally hosted LLM, CodeWise delivers accurate, context-aware answers grounded in the uploaded source code.
+The objective of CodeWise is to enable developers to interact with their codebase using natural language. By combining Retrieval-Augmented Generation with hybrid search, a code graph and a locally hosted LLM, CodeWise delivers accurate, context-aware answers grounded in the uploaded source code, without the code ever leaving your machine.
